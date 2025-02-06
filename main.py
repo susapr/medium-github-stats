@@ -4,31 +4,40 @@ if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
 from fastapi import FastAPI, Response
-from fastapi.responses import RedirectResponse
-
 import feedparser
 from bs4 import BeautifulSoup
 
 app = FastAPI()
 
-@app.get("/")
-def root():
-    return RedirectResponse(url="/card")
-
-@app.get("/favicon.ico")
-def favicon():
-    return Response(status_code=204)
-
 # Replace with your actual Medium feed URL (e.g., "https://medium.com/feed/@your_username")
 MEDIUM_RSS_URL = "https://medium.com/feed/@susapr"
+
+def wrap_text(text, max_chars):
+    """
+    A simple text-wrapping function that breaks a string into multiple lines,
+    with each line having up to `max_chars` characters.
+    """
+    words = text.split()
+    lines = []
+    current_line = ""
+    for word in words:
+        # Add a space only if current_line is not empty.
+        if len(current_line) + len(word) + (1 if current_line else 0) <= max_chars:
+            current_line = f"{current_line} {word}" if current_line else word
+        else:
+            lines.append(current_line)
+            current_line = word
+    if current_line:
+        lines.append(current_line)
+    return lines
 
 def get_articles():
     """
     Parse the Medium RSS feed and return up to three articles.
     For each article, extract:
       - title: from entry.title.
-      - subtitle: either the first <blockquote> text found in entry.content,
-                  or, if not available, the first 10 words of the first <p>.
+      - subtitle: either the text of the first <blockquote> if found,
+                  or, if not available, the first 10 words of the first <p> (ending with '...').
       - link: the article URL.
       - image: the featured image (if available).
     """
@@ -38,7 +47,7 @@ def get_articles():
         title = entry.title
         link = entry.link
 
-        # Attempt to generate a subtitle.
+        # Generate a subtitle.
         subtitle = ""
         if hasattr(entry, "content"):
             content_html = entry.content[0].value
@@ -54,7 +63,7 @@ def get_articles():
                         subtitle = " ".join(words[:10]) + "..."
                     else:
                         subtitle = p.get_text(strip=True)
-        # Fallback to summary (trimmed to 10 words) if no subtitle was generated.
+        # Fallback to summary (trimmed) if nothing else was found.
         if not subtitle and hasattr(entry, "summary"):
             words = entry.summary.strip().split()
             if len(words) > 10:
@@ -83,48 +92,59 @@ def get_articles():
 @app.get("/card")
 def card():
     """
-    Render an SVG with a dark-themed card for each of the three most recent Medium articles.
-    
+    Render an SVG containing a dark-themed card for each of the three most recent Medium articles.
     Each card includes:
-      - A clickable area (wrapped in an <a>) that directs to the article.
-      - On the left: a text container (using a foreignObject) displaying the article title (bold, white)
-        and subtitle (smaller, gray) in GitHub’s system font.
-      - On the right: the featured image (if available), shown with rounded corners and some right padding.
+      - A clickable area (<a>) linking to the article.
+      - On the left: the title (bold, white) and subtitle (smaller, gray), rendered using SVG <text> elements.
+      - On the right: the featured image (if available) with rounded corners and right padding.
     """
     articles = get_articles()
     width = 600
     card_height = 160
     gap = 20
-    height = (card_height + gap) * len(articles) + gap if articles else gap
+    total_height = (card_height + gap) * len(articles) + gap if articles else gap
 
     svg_parts = []
-    # Begin SVG document.
-    svg_parts.append(f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">')
+    svg_parts.append(f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{total_height}" viewBox="0 0 {width} {total_height}">')
     svg_parts.append("<style>")
-    # Use a GitHub dark theme background for the card.
     svg_parts.append(".card { fill: #0d1117; stroke: #444; stroke-width: 1; }")
     svg_parts.append(".clickable { cursor: pointer; }")
     svg_parts.append("</style>")
-
+    
     y_offset = gap
     for i, article in enumerate(articles):
         svg_parts.append(f'<a href="{article["link"]}" target="_blank">')
-        # Draw the card background with rounded corners.
+        # Card background.
         svg_parts.append(f'<rect class="card clickable" x="20" y="{y_offset}" width="{width - 40}" height="{card_height}" rx="10" ry="10"/>')
-        # Left-hand text container using foreignObject. We set the font-family to mimic GitHub's.
-        svg_parts.append(f'''<foreignObject x="30" y="{y_offset + 10}" width="370" height="{card_height - 20}">
-  <body xmlns="http://www.w3.org/1999/xhtml" style="margin:0; padding:0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;">
-    <div style="color:#fff; font-size:18px; font-weight:bold; line-height:1.2;">{article["title"]}</div>
-    <div style="color:#ccc; font-size:14px; margin-top:5px;">{article["subtitle"]}</div>
-  </body>
-</foreignObject>''')
-        # Right-hand: display the featured image (if available) with rounded corners and right padding.
+        
+        # Prepare wrapped title and subtitle.
+        title_lines = wrap_text(article["title"], 40)  # Adjust max_chars as needed.
+        subtitle_lines = wrap_text(article["subtitle"], 50)  # Adjust max_chars as needed.
+        
+        # Render the title using <text> and <tspan>.
+        text_x = 30
+        text_start_y = y_offset + 30  # Starting y for the title.
+        svg_parts.append(f'<text x="{text_x}" y="{text_start_y}" fill="#fff" font-size="18" font-family="-apple-system, BlinkMacSystemFont, \'Segoe UI\', Helvetica, Arial, sans-serif" font-weight="bold">')
+        for j, line in enumerate(title_lines):
+            # For the first line, dy is 0; for subsequent lines, use dy="1.2em".
+            dy = "0" if j == 0 else "1.2em"
+            svg_parts.append(f'<tspan x="{text_x}" dy="{dy}">{line}</tspan>')
+        svg_parts.append('</text>')
+        
+        # Render the subtitle below the title.
+        # Calculate y position: base it on the number of title lines.
+        subtitle_y = text_start_y + (len(title_lines) * 1.2 * 18) + 5  # 18 is the title font size.
+        svg_parts.append(f'<text x="{text_x}" y="{subtitle_y}" fill="#ccc" font-size="14" font-family="-apple-system, BlinkMacSystemFont, \'Segoe UI\', Helvetica, Arial, sans-serif">')
+        for j, line in enumerate(subtitle_lines):
+            dy = "0" if j == 0 else "1.2em"
+            svg_parts.append(f'<tspan x="{text_x}" dy="{dy}">{line}</tspan>')
+        svg_parts.append('</text>')
+        
+        # Display the featured image on the right, if available.
         if article["image"]:
-            # Set image parameters.
             img_x = 420
-            img_width = 150  # This gives a little right-side padding within the card.
+            img_width = 150  # Leaves some padding on the right.
             clip_id = f"clipImage{i}"
-            # Define a clipPath for rounded image corners.
             svg_parts.append(f'''<clipPath id="{clip_id}">
   <rect x="{img_x}" y="{y_offset + 10}" width="{img_width}" height="{card_height - 20}" rx="10" ry="10" />
 </clipPath>''')
