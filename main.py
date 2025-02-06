@@ -4,10 +4,20 @@ if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
 from fastapi import FastAPI, Response
+from fastapi.responses import RedirectResponse
+
 import feedparser
 from bs4 import BeautifulSoup
 
 app = FastAPI()
+
+@app.get("/")
+def root():
+    return RedirectResponse(url="/card")
+
+@app.get("/favicon.ico")
+def favicon():
+    return Response(status_code=204)
 
 # Replace with your actual Medium feed URL (e.g., "https://medium.com/feed/@your_username")
 MEDIUM_RSS_URL = "https://medium.com/feed/@susapr"
